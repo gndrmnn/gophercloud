@@ -200,6 +200,9 @@ func Delete(ctx context.Context, client *gophercloud.ServiceClient, roleID strin
 // the ListAssignments request.
 type ListAssignmentsOptsBuilder interface {
 	ToRolesListAssignmentsQuery() (string, error)
+
+	isSystemScoped() bool
+	toURLParts() (string, string, string, string, error)
 }
 
 // ListAssignmentsOpts allows you to query the ListAssignments method.
@@ -241,6 +244,14 @@ type ListAssignmentsOpts struct {
 	IncludeSubtree *bool `q:"include_subtree"`
 }
 
+func (opts ListAssignmentsOpts) isSystemScoped() bool {
+	return opts.ScopeSystem != ""
+}
+
+func (opts ListAssignmentsOpts) toURLParts() (string, string, string, string, error) {
+	return assignmentURLParts(opts.UserID, opts.GroupID, opts.ScopeProjectID, opts.ScopeDomainID, opts.IsSystemScoped())
+}
+
 // ToRolesListAssignmentsQuery formats a ListAssignmentsOpts into a query string.
 func (opts ListAssignmentsOpts) ToRolesListAssignmentsQuery() (string, error) {
 	q, err := gophercloud.BuildQueryString(opts)
@@ -249,14 +260,34 @@ func (opts ListAssignmentsOpts) ToRolesListAssignmentsQuery() (string, error) {
 
 // ListAssignments enumerates the roles assigned to a specified resource.
 func ListAssignments(client *gophercloud.ServiceClient, opts ListAssignmentsOptsBuilder) pagination.Pager {
-	url := listAssignmentsURL(client)
-	if opts != nil {
-		query, err := opts.ToRolesListAssignmentsQuery()
+	if opts == nil {
+		// OpenStack supports a GET request on role_assignments without any params
+		url := listAssignmentsURL(client)
+		return pagination.NewPager(client, url, func(r pagination.PageResult) pagination.Page {
+			return RoleAssignmentPage{pagination.LinkedPageBase{PageResult: r}}
+		})
+	}
+
+	if opts.isSystemScoped() {
+		// System scoped roles need to query the "system" endpoint instead of the "role_assignment" endpoint
+		targetType, targetID, actorType, actorID, err := opts.toURLParts()
 		if err != nil {
 			return pagination.Pager{Err: err}
 		}
-		url += query
+
+		url := listAssignmentsOnResourceURL(client, targetType, targetID, actorType, actorID)
+		return pagination.NewPager(client, url, func(r pagination.PageResult) pagination.Page {
+			return RoleAssignmentPage{pagination.LinkedPageBase{PageResult: r}}
+		})
 	}
+
+	url := listAssignmentsURL(client)
+	query, err := opts.ToRolesListAssignmentsQuery()
+	if err != nil {
+		return pagination.Pager{Err: err}
+	}
+	url += query
+
 	return pagination.NewPager(client, url, func(r pagination.PageResult) pagination.Page {
 		return RoleAssignmentPage{pagination.LinkedPageBase{PageResult: r}}
 	})
